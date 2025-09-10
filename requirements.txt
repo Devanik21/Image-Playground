@@ -1,8 +1,8 @@
-pstreamlit
+streamlit
 opencv-python
-pillow 
-numpy 
-scipy 
-scikit-image 
-matplotlib 
+numpy
+Pillow
+scipy
+scikit-image
+matplotlib
 seaborn
