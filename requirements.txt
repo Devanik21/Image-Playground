@@ -1,0 +1,8 @@
+pstreamlit
+opencv-python
+pillow 
+numpy 
+scipy 
+scikit-image 
+matplotlib 
+seaborn
