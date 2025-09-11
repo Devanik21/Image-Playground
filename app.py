@@ -27,6 +27,11 @@ if 'processed_img' not in st.session_state:
     st.session_state.processed_img = None
 if 'current_tool' not in st.session_state:
     st.session_state.current_tool = None
+if 'uploaded_file_name' not in st.session_state:
+    st.session_state.uploaded_file_name = None
+if 'uploaded_file_size' not in st.session_state:
+    st.session_state.uploaded_file_size = None
+
 
 # Custom CSS for colorful UI
 st.markdown("""
@@ -65,10 +70,40 @@ def download_button(img, filename, label):
         mime="image/png"
     )
 
+# Helper functions for basic effects
+def apply_sepia(img_array):
+    sepia_filter = np.array([
+        [0.393, 0.769, 0.189],
+        [0.349, 0.686, 0.168],
+        [0.272, 0.534, 0.131]
+    ])
+    sepia_img = img_array.dot(sepia_filter.T)
+    return np.clip(sepia_img, 0, 255).astype(np.uint8)
+
+def color_temperature(img_array, temp_type):
+    img_array = img_array.copy() # Avoid modifying in place
+    if temp_type == "cool":
+        img_array[:, :, 2] = np.clip(img_array[:, :, 2] * 0.9, 0, 255) # Decrease blue
+        img_array[:, :, 0] = np.clip(img_array[:, :, 0] * 1.1, 0, 255) # Increase red
+    else:  # warm
+        img_array[:, :, 0] = np.clip(img_array[:, :, 0] * 0.9, 0, 255) # Decrease red
+        img_array[:, :, 2] = np.clip(img_array[:, :, 2] * 1.1, 0, 255) # Increase blue
+    return img_array.astype(np.uint8)
+
+def neon_effect(img_array):
+    img = Image.fromarray(img_array)
+    enhancer = ImageEnhance.Color(img)
+    img = enhancer.enhance(2.5)
+    enhancer = ImageEnhance.Contrast(img)
+    img = enhancer.enhance(1.8)
+    return np.array(img)
+
+def posterize_effect(img_array, levels=4):
+    if levels == 0: levels = 1
+    return ((img_array // (256 // levels)) * (255 // levels)).astype(np.uint8)
+
 # Color Effects (100 tools)
 def color_effects(img, effect_type, param=1.0):
-    img_array = np.array(img)
-    
     effects = {
         "Vintage Sepia": lambda x: apply_sepia(x),
         "Cool Blue": lambda x: color_temperature(x, "cool"),
@@ -176,13 +211,15 @@ def color_effects(img, effect_type, param=1.0):
         "Shadow Recovery": lambda x: shadow_recovery(x),
         "Highlight Recovery": lambda x: highlight_recovery(x)
     }
-    
+
+    if img is None:
+        return effects
+
+    img_array = np.array(img)
     return effects.get(effect_type, lambda x: x)(img_array)
 
 # Artistic Effects (100 tools)
 def artistic_effects(img, effect_type):
-    img_array = np.array(img)
-    
     effects = {
         "Oil Painting": lambda x: oil_painting(x),
         "Watercolor": lambda x: watercolor_effect(x),
@@ -293,7 +330,11 @@ def artistic_effects(img, effect_type):
         "Twirl": lambda x: twirl_effect(x),
         "Wave": lambda x: wave_effect(x)
     }
+
+    if img is None:
+        return effects
     
+    img_array = np.array(img)
     return effects.get(effect_type, lambda x: x)(img_array)
 
 # Geometric Effects (100 tools)
@@ -319,7 +360,8 @@ def random_points_pattern(img_array):
     # Add random colored points
     for _ in range(1000):
         x, y = np.random.randint(0, w), np.random.randint(0, h)
-        cv2.circle(result, (x, y), 3, (255, 255, 255), -1)
+        color = tuple(np.random.randint(0, 256, 3).tolist())
+        cv2.circle(result, (x, y), 3, color, -1)
     
     return result
 
@@ -473,26 +515,14 @@ def radial_blur(img_array):
     center_x, center_y = w//2, h//2
     
     result = np.zeros_like(img_array, dtype=np.float32)
-    weights = np.zeros_like(img_array[:,:,0], dtype=np.float32)
     
-    for angle in np.linspace(0, 2*np.pi, 36):
-        cos_a, sin_a = np.cos(angle), np.sin(angle)
+    for i in range(1, 11):
+        scale = 1 + i * 0.05
+        M = cv2.getRotationMatrix2D((center_x, center_y), 0, scale)
+        scaled = cv2.warpAffine(img_array, M, (w, h), borderMode=cv2.BORDER_REPLICATE)
+        result += scaled.astype(np.float32)
         
-        for radius in range(1, 20):
-            offset_x = int(radius * cos_a)
-            offset_y = int(radius * sin_a)
-            
-            y_coords = np.clip(np.arange(h) + offset_y, 0, h-1)
-            x_coords = np.clip(np.arange(w) + offset_x, 0, w-1)
-            
-            weight = 1.0 / (radius + 1)
-            result += img_array[y_coords[:, None], x_coords] * weight
-            weights += weight
-    
-    # Avoid division by zero
-    weights = np.maximum(weights, 1e-7)
-    result = result / weights[:, :, None]
-    
+    result = result / 10
     return np.clip(result, 0, 255).astype(np.uint8)
 
 def zoom_blur(img_array):
@@ -501,13 +531,12 @@ def zoom_blur(img_array):
     
     result = np.zeros_like(img_array, dtype=np.float32)
     
-    for scale in np.linspace(0.8, 1.2, 20):
-        # Create transformation matrix for scaling
+    for scale in np.linspace(1.0, 1.2, 10):
         M = cv2.getRotationMatrix2D((center_x, center_y), 0, scale)
-        scaled = cv2.warpAffine(img_array, M, (w, h))
+        scaled = cv2.warpAffine(img_array, M, (w, h), borderMode=cv2.BORDER_REPLICATE)
         result += scaled.astype(np.float32)
     
-    result = result / 20
+    result = result / 10
     return np.clip(result, 0, 255).astype(np.uint8)
 
 def spin_blur(img_array):
@@ -516,12 +545,12 @@ def spin_blur(img_array):
     
     result = np.zeros_like(img_array, dtype=np.float32)
     
-    for angle in np.linspace(-10, 10, 20):
+    for angle in np.linspace(-5, 5, 10):
         M = cv2.getRotationMatrix2D((center_x, center_y), angle, 1)
-        rotated = cv2.warpAffine(img_array, M, (w, h))
+        rotated = cv2.warpAffine(img_array, M, (w, h), borderMode=cv2.BORDER_REPLICATE)
         result += rotated.astype(np.float32)
     
-    result = result / 20
+    result = result / 10
     return np.clip(result, 0, 255).astype(np.uint8)
 
 def surface_blur(img_array):
@@ -746,8 +775,8 @@ def moire_removal(img_array):
     return aliasing_fix(img_array)
 
 def banding_fix(img_array):
-    noise = np.random.normal(0, 2, img_array.shape)
-    return np.clip(img_array + noise, 0, 255).astype(np.uint8)
+    noise = np.random.normal(0, 2, img_array.shape).astype(np.uint8)
+    return cv2.add(img_array, noise)
 
 def block_artifact_fix(img_array):
     return cv2.bilateralFilter(img_array, 9, 75, 75)
@@ -771,21 +800,19 @@ def chromatic_aberration_fix(img_array):
 def vignette_removal(img_array):
     h, w = img_array.shape[:2]
     
-    # Create vignette mask
     X_resultant_kernel = cv2.getGaussianKernel(w, w/3)
     Y_resultant_kernel = cv2.getGaussianKernel(h, h/3)
     kernel = Y_resultant_kernel * X_resultant_kernel.T
     mask = kernel / np.max(kernel)
     
-    # Apply inverse vignette
     result = img_array.copy().astype(np.float32)
     for c in range(3):
-        result[:,:,c] = result[:,:,c] / (mask + 0.1)
+        result[:,:,c] = np.clip(result[:,:,c] / (mask + 0.1), 0, 255)
     
-    return np.clip(result, 0, 255).astype(np.uint8)
+    return result.astype(np.uint8)
 
 def distortion_fix(img_array):
-    return img_array  # Placeholder - would need camera calibration
+    return img_array
 
 def barrel_distortion_fix(img_array):
     return distortion_fix(img_array)
@@ -794,25 +821,24 @@ def pincushion_fix(img_array):
     return distortion_fix(img_array)
 
 def keystone_fix(img_array):
-    return img_array  # Placeholder - would need perspective correction
+    return img_array
 
 def perspective_fix(img_array):
     return keystone_fix(img_array)
 
 def tilt_correction(img_array):
-    return img_array  # Placeholder - would need angle detection
+    return img_array
 
 def rotation_fix(img_array):
     return tilt_correction(img_array)
 
 def auto_crop(img_array):
-    # Simple auto crop - remove black borders
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
     _, binary = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     if contours:
-        x, y, w, h = cv2.boundingRect(contours[0])
+        x, y, w, h = cv2.boundingRect(np.concatenate(contours))
         return img_array[y:y+h, x:x+w]
     return img_array
 
@@ -835,7 +861,7 @@ def highlight_fix(img_array):
     return highlight_recovery(img_array)
 
 def contrast_fix(img_array):
-    return np.clip(img_array * 1.2, 0, 255).astype(np.uint8)
+    return np.clip(img_array.astype(np.float32) * 1.2, 0, 255).astype(np.uint8)
 
 def saturation_fix(img_array):
     return hsl_adjust(img_array)
@@ -862,24 +888,23 @@ def local_contrast_filter(img_array):
     return microcontrast_filter(img_array)
 
 def adaptive_filter(img_array):
-    return cv2.adaptiveThreshold(cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY), 
-                                255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-                                cv2.THRESH_BINARY, 11, 2)
+    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+    adaptive = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+    return cv2.cvtColor(adaptive, cv2.COLOR_GRAY2RGB)
 
 def histogram_equalization(img_array):
-    # Apply histogram equalization to each channel
     result = img_array.copy()
     for c in range(3):
         result[:,:,c] = cv2.equalizeHist(result[:,:,c])
     return result
 
 def clahe_filter(img_array):
-    # Contrast Limited Adaptive Histogram Equalization
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
     result = img_array.copy()
-    for c in range(3):
-        result[:,:,c] = clahe.apply(result[:,:,c])
-    return result
+    ycrcb = cv2.cvtColor(result, cv2.COLOR_RGB2YCrCb)
+    ycrcb[:,:,0] = clahe.apply(ycrcb[:,:,0])
+    return cv2.cvtColor(ycrcb, cv2.COLOR_YCrCb2RGB)
+
 
 def gamma_filter(img_array, gamma=1.5):
     return gamma_correct(img_array, gamma)
@@ -910,16 +935,16 @@ def focus_stack(img_array):
 
 def depth_map_filter(img_array):
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-    return cv2.applyColorMap(gray, cv2.COLORMAP_JET)
+    colormap = cv2.applyColorMap(gray, cv2.COLORMAP_JET)
+    return cv2.cvtColor(colormap, cv2.COLOR_BGR2RGB)
 
 def stereo_filter(img_array):
     return depth_map_filter(img_array)
 
 def anaglyph_filter(img_array):
-    # Create red/cyan anaglyph effect
     result = img_array.copy()
-    result[:,:,1] = result[:,:,0]  # Green = Red
-    result[:,:,2] = result[:,:,0]  # Blue = Red
+    result[:,:,1] = img_array[:,:,0]  # Green = Red
+    result[:,:,2] = img_array[:,:,0]  # Blue = Red
     return result
 
 # Add more texture implementations
@@ -927,8 +952,8 @@ def granite_texture(img_array):
     return stone_texture(img_array)
 
 def concrete_texture(img_array):
-    noise = np.random.normal(0, 25, img_array.shape)
-    return np.clip(img_array + noise, 0, 255).astype(np.uint8)
+    noise = np.random.normal(0, 25, img_array.shape).astype(np.int16)
+    return np.clip(img_array.astype(np.int16) + noise, 0, 255).astype(np.uint8)
 
 def rust_texture(img_array):
     return retro_color(concrete_texture(img_array), "pink")
@@ -955,7 +980,6 @@ def worn_texture(img_array):
     return distressed_texture(img_array)
 
 def scratched_texture(img_array):
-    # Add scratch-like lines
     h, w = img_array.shape[:2]
     result = img_array.copy()
     
@@ -976,18 +1000,17 @@ def faded_texture(img_array):
     return vintage_fade(img_array)
 
 def stained_texture(img_array):
-    # Add stain-like blotches
     h, w = img_array.shape[:2]
-    result = img_array.copy()
+    stain_layer = np.zeros_like(img_array)
     
     for _ in range(20):
         x, y = np.random.randint(50, w-50), np.random.randint(50, h-50)
         radius = np.random.randint(20, 80)
-        color = tuple(np.random.randint(0, 100, 3).tolist())
-        cv2.circle(result, (x, y), radius, color, -1)
+        color = tuple(np.random.randint(50, 100, 3).tolist())
+        cv2.circle(stain_layer, (x, y), radius, color, -1)
     
-    # Blend with original
-    return cv2.addWeighted(img_array, 0.7, result, 0.3, 0)
+    stain_layer = cv2.GaussianBlur(stain_layer, (51, 51), 0)
+    return cv2.addWeighted(img_array, 0.7, stain_layer, 0.3, 0)
 
 def water_damage_texture(img_array):
     return stained_texture(img_array)
@@ -1065,397 +1088,24 @@ def rope_texture(img_array):
     return canvas_texture(img_array)
 
 def cord_texture(img_array):
-    return rope_texture(_effects(img, effect_type))
-    img_array = np.array(img)
-    
-    effects = {
-        "Mirror Horizontal": lambda x: cv2.flip(x, 1),
-        "Mirror Vertical": lambda x: cv2.flip(x, 0),
-        "Mirror Diagonal": lambda x: mirror_diagonal(x),
-        "Rotate 15°": lambda x: rotate_image(x, 15),
-        "Rotate 30°": lambda x: rotate_image(x, 30),
-        "Rotate 45°": lambda x: rotate_image(x, 45),
-        "Rotate 60°": lambda x: rotate_image(x, 60),
-        "Rotate 90°": lambda x: rotate_image(x, 90),
-        "Rotate 120°": lambda x: rotate_image(x, 120),
-        "Rotate 135°": lambda x: rotate_image(x, 135),
-        "Rotate 180°": lambda x: rotate_image(x, 180),
-        "Rotate 270°": lambda x: rotate_image(x, 270),
-        "Kaleidoscope 4": lambda x: kaleidoscope(x, 4),
-        "Kaleidoscope 6": lambda x: kaleidoscope(x, 6),
-        "Kaleidoscope 8": lambda x: kaleidoscope(x, 8),
-        "Kaleidoscope 12": lambda x: kaleidoscope(x, 12),
-        "Mirror Quad": lambda x: mirror_quad(x),
-        "Mirror Octagon": lambda x: mirror_octagon(x),
-        "Triangular Tiling": lambda x: triangular_tiling(x),
-        "Hexagonal Tiling": lambda x: hexagonal_tiling(x),
-        "Square Tiling": lambda x: square_tiling(x),
-        "Diamond Tiling": lambda x: diamond_tiling(x),
-        "Circular Pattern": lambda x: circular_pattern(x),
-        "Spiral Pattern": lambda x: spiral_pattern(x),
-        "Radial Pattern": lambda x: radial_pattern(x),
-        "Concentric Circles": lambda x: concentric_circles(x),
-        "Grid Pattern": lambda x: grid_pattern(x),
-        "Checkerboard": lambda x: checkerboard_pattern(x),
-        "Stripe Pattern": lambda x: stripe_pattern(x),
-        "Zigzag Pattern": lambda x: zigzag_pattern(x),
-        "Wave Pattern": lambda x: wave_pattern(x),
-        "Sine Wave": lambda x: sine_wave_pattern(x),
-        "Cosine Wave": lambda x: cosine_wave_pattern(x),
-        "Triangle Wave": lambda x: triangle_wave_pattern(x),
-        "Square Wave": lambda x: square_wave_pattern(x),
-        "Sawtooth Wave": lambda x: sawtooth_pattern(x),
-        "Fractal Spiral": lambda x: fractal_spiral(x),
-        "Mandala": lambda x: mandala_pattern(x),
-        "Sacred Geometry": lambda x: sacred_geometry(x),
-        "Golden Ratio": lambda x: golden_ratio_pattern(x),
-        "Fibonacci Spiral": lambda x: fibonacci_spiral(x),
-        "Pentagon Pattern": lambda x: pentagon_pattern(x),
-        "Hexagon Pattern": lambda x: hexagon_pattern(x),
-        "Octagon Pattern": lambda x: octagon_pattern(x),
-        "Star Pattern": lambda x: star_pattern(x),
-        "Cross Pattern": lambda x: cross_pattern(x),
-        "Plus Pattern": lambda x: plus_pattern(x),
-        "X Pattern": lambda x: x_pattern(x),
-        "Diamond Grid": lambda x: diamond_grid(x),
-        "Triangular Grid": lambda x: triangular_grid(x),
-        "Honeycomb": lambda x: honeycomb_pattern(x),
-        "Celtic Knot": lambda x: celtic_knot(x),
-        "Islamic Pattern": lambda x: islamic_pattern(x),
-        "Art Deco Pattern": lambda x: art_deco_pattern(x),
-        "Tessellation": lambda x: tessellation_pattern(x),
-        "Penrose Tiling": lambda x: penrose_tiling(x),
-        "Voronoi Diagram": lambda x: voronoi_pattern(x),
-        "Delaunay": lambda x: delaunay_pattern(x),
-        "Random Points": lambda x: random_points_pattern(x),
-        "Scatter Pattern": lambda x: scatter_pattern(x),
-        "Dot Matrix": lambda x: dot_matrix_pattern(x),
-        "Pixel Grid": lambda x: pixel_grid_pattern(x),
-        "Circuit Board": lambda x: circuit_pattern(x),
-        "Maze Pattern": lambda x: maze_pattern(x),
-        "Labyrinth": lambda x: labyrinth_pattern(x),
-        "Network Pattern": lambda x: network_pattern(x),
-        "Web Pattern": lambda x: web_pattern(x),
-        "Tree Pattern": lambda x: tree_pattern(x),
-        "Branch Pattern": lambda x: branch_pattern(x),
-        "Leaf Pattern": lambda x: leaf_pattern(x),
-        "Flower Pattern": lambda x: flower_pattern(x),
-        "Petal Pattern": lambda x: petal_pattern(x),
-        "Crystal Pattern": lambda x: crystal_pattern(x),
-        "Snowflake": lambda x: snowflake_pattern(x),
-        "Frost Pattern": lambda x: frost_pattern(x),
-        "Lightning Pattern": lambda x: lightning_pattern(x),
-        "River Pattern": lambda x: river_pattern(x),
-        "Mountain Pattern": lambda x: mountain_pattern(x),
-        "Cloud Pattern": lambda x: cloud_pattern(x),
-        "Wave Interference": lambda x: wave_interference(x),
-        "Ripple Effect": lambda x: ripple_effect(x),
-        "Concentric Waves": lambda x: concentric_waves(x),
-        "Standing Waves": lambda x: standing_waves(x),
-        "Frequency Pattern": lambda x: frequency_pattern(x),
-        "Amplitude Pattern": lambda x: amplitude_pattern(x),
-        "Phase Pattern": lambda x: phase_pattern(x),
-        "Harmonic Pattern": lambda x: harmonic_pattern(x),
-        "Resonance Pattern": lambda x: resonance_pattern(x),
-        "Interference Pattern": lambda x: interference_pattern(x),
-        "Diffraction Pattern": lambda x: diffraction_pattern(x),
-        "Polarization": lambda x: polarization_pattern(x),
-        "Refraction": lambda x: refraction_pattern(x),
-        "Reflection": lambda x: reflection_pattern(x),
-        "Dispersion": lambda x: dispersion_pattern(x),
-        "Spectrum": lambda x: spectrum_pattern(x),
-        "Prism Effect": lambda x: prism_effect(x),
-        "Rainbow Geometry": lambda x: rainbow_geometry(x),
-        "Color Wheel": lambda x: color_wheel_pattern(x),
-        "Gradient Radial": lambda x: gradient_radial(x),
-        "Gradient Linear": lambda x: gradient_linear(x),
-        "Gradient Conical": lambda x: gradient_conical(x),
-        "Gradient Diamond": lambda x: gradient_diamond(x),
-        "Gradient Spiral": lambda x: gradient_spiral(x),
-        "Gradient Wave": lambda x: gradient_wave(x),
-        "Multi Gradient": lambda x: multi_gradient(x),
-        "Color Transition": lambda x: color_transition(x),
-        "Blend Modes": lambda x: blend_modes_effect(x)
-    }
-    
-    return effects.get(effect_type, lambda x: x)(img_array)
+    return rope_texture(img_array)
 
-# Filter Effects (100 tools)
-def filter_effects(img, effect_type):
-    img_array = np.array(img)
-    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY) if len(img_array.shape) == 3 else img_array
-    
-    effects = {
-        "Gaussian Blur": lambda x: cv2.GaussianBlur(x, (15, 15), 0),
-        "Motion Blur H": lambda x: motion_blur(x, "horizontal"),
-        "Motion Blur V": lambda x: motion_blur(x, "vertical"),
-        "Radial Blur": lambda x: radial_blur(x),
-        "Zoom Blur": lambda x: zoom_blur(x),
-        "Spin Blur": lambda x: spin_blur(x),
-        "Surface Blur": lambda x: surface_blur(x),
-        "Smart Blur": lambda x: smart_blur(x),
-        "Lens Blur": lambda x: lens_blur(x),
-        "Box Blur": lambda x: box_blur(x),
-        "Median Filter": lambda x: cv2.medianBlur(x, 15),
-        "Bilateral Filter": lambda x: cv2.bilateralFilter(x, 15, 80, 80),
-        "Non-local Means": lambda x: non_local_means(x),
-        "Wiener Filter": lambda x: wiener_filter(x),
-        "Kuwahara Filter": lambda x: kuwahara_filter(x),
-        "Anisotropic": lambda x: anisotropic_filter(x),
-        "Edge Preserving": lambda x: edge_preserving_filter(x),
-        "Detail Enhance": lambda x: detail_enhance(x),
-        "Pencil Sketch": lambda x: pencil_sketch_filter(x),
-        "Stylization": lambda x: stylization_filter(x),
-        "Sharpen": lambda x: sharpen_filter(x),
-        "Unsharp Mask": lambda x: unsharp_mask(x),
-        "High Pass": lambda x: high_pass_filter(x),
-        "Low Pass": lambda x: low_pass_filter(x),
-        "Band Pass": lambda x: band_pass_filter(x),
-        "Notch Filter": lambda x: notch_filter(x),
-        "Butterworth": lambda x: butterworth_filter(x),
-        "Chebyshev": lambda x: chebyshev_filter(x),
-        "Elliptic": lambda x: elliptic_filter(x),
-        "Bessel": lambda x: bessel_filter(x),
-        "Edge Detection": lambda x: canny_edge(gray),
-        "Sobel X": lambda x: sobel_x_filter(gray),
-        "Sobel Y": lambda x: sobel_y_filter(gray),
-        "Sobel Combined": lambda x: sobel_combined(gray),
-        "Prewitt": lambda x: prewitt_filter(gray),
-        "Roberts": lambda x: roberts_filter(gray),
-        "Laplacian": lambda x: laplacian_filter(gray),
-        "LoG": lambda x: log_filter(gray),
-        "DoG": lambda x: dog_filter(gray),
-        "Gradient": lambda x: gradient_filter(gray),
-        "Emboss": lambda x: emboss_filter(x),
-        "Emboss 45°": lambda x: emboss_45_filter(x),
-        "Bevel": lambda x: bevel_filter(x),
-        "Ridge": lambda x: ridge_filter(x),
-        "Valley": lambda x: valley_filter(x),
-        "Raised": lambda x: raised_filter(x),
-        "Sunken": lambda x: sunken_filter(x),
-        "Chisel": lambda x: chisel_filter(x),
-        "Stamp": lambda x: stamp_filter(x),
-        "Engrave": lambda x: engrave_filter(x),
-        "Noise Reduction": lambda x: noise_reduction(x),
-        "Denoising": lambda x: denoising_filter(x),
-        "Despeckle": lambda x: despeckle_filter(x),
-        "Dust Removal": lambda x: dust_removal(x),
-        "Scratch Removal": lambda x: scratch_removal(x),
-        "Artifact Removal": lambda x: artifact_removal(x),
-        "JPEG Cleanup": lambda x: jpeg_cleanup(x),
-        "Compression Cleanup": lambda x: compression_cleanup(x),
-        "Aliasing Fix": lambda x: aliasing_fix(x),
-        "Moire Removal": lambda x: moire_removal(x),
-        "Banding Fix": lambda x: banding_fix(x),
-        "Block Artifact": lambda x: block_artifact_fix(x),
-        "Ringing Removal": lambda x: ringing_removal(x),
-        "Halo Removal": lambda x: halo_removal(x),
-        "Purple Fringe": lambda x: purple_fringe_fix(x),
-        "Chromatic Fix": lambda x: chromatic_aberration_fix(x),
-        "Vignette Removal": lambda x: vignette_removal(x),
-        "Distortion Fix": lambda x: distortion_fix(x),
-        "Barrel Fix": lambda x: barrel_distortion_fix(x),
-        "Pincushion Fix": lambda x: pincushion_fix(x),
-        "Keystone Fix": lambda x: keystone_fix(x),
-        "Perspective Fix": lambda x: perspective_fix(x),
-        "Tilt Correction": lambda x: tilt_correction(x),
-        "Rotation Fix": lambda x: rotation_fix(x),
-        "Crop Auto": lambda x: auto_crop(x),
-        "Straighten": lambda x: auto_straighten(x),
-        "Level Horizon": lambda x: level_horizon(x),
-        "White Balance": lambda x: white_balance_auto(x),
-        "Exposure Fix": lambda x: exposure_fix(x),
-        "Shadow Fill": lambda x: shadow_fill(x),
-        "Highlight Fix": lambda x: highlight_fix(x),
-        "Contrast Fix": lambda x: contrast_fix(x),
-        "Saturation Fix": lambda x: saturation_fix(x),
-        "Vibrance Fix": lambda x: vibrance_fix(x),
-        "Clarity": lambda x: clarity_filter(x),
-        "Structure": lambda x: structure_filter(x),
-        "Definition": lambda x: definition_filter(x),
-        "Texture": lambda x: texture_filter(x),
-        "Microcontrast": lambda x: microcontrast_filter(x),
-        "Local Contrast": lambda x: local_contrast_filter(x),
-        "Adaptive": lambda x: adaptive_filter(x),
-        "Histogram Eq": lambda x: histogram_equalization(x),
-        "CLAHE": lambda x: clahe_filter(x),
-        "Gamma": lambda x: gamma_filter(x),
-        "Levels": lambda x: levels_filter(x),
-        "Curves": lambda x: curves_filter(x),
-        "Tone Mapping": lambda x: tone_mapping_filter(x),
-        "HDR": lambda x: hdr_filter(x),
-        "Dynamic Range": lambda x: dynamic_range_filter(x),
-        "Exposure Fusion": lambda x: exposure_fusion(x),
-        "Bracket Merge": lambda x: bracket_merge(x),
-        "Focus Stack": lambda x: focus_stack(x),
-        "Depth Map": lambda x: depth_map_filter(x),
-        "Stereo": lambda x: stereo_filter(x),
-        "Anaglyph": lambda x: anaglyph_filter(x)
-    }
-    
-    return effects.get(effect_type, lambda x: x)(img_array)
-
-# Texture Effects (100 tools)
-def texture_effects(img, effect_type):
-    img_array = np.array(img)
-    
-    effects = {
-        "Canvas": lambda x: canvas_texture(x),
-        "Paper": lambda x: paper_texture(x),
-        "Fabric": lambda x: fabric_texture(x),
-        "Leather": lambda x: leather_texture(x),
-        "Wood Grain": lambda x: wood_grain_texture(x),
-        "Stone": lambda x: stone_texture(x),
-        "Marble": lambda x: marble_texture(x),
-        "Granite": lambda x: granite_texture(x),
-        "Sand": lambda x: sand_texture(x),
-        "Concrete": lambda x: concrete_texture(x),
-        "Metal": lambda x: metal_texture(x),
-        "Rust": lambda x: rust_texture(x),
-        "Corrosion": lambda x: corrosion_texture(x),
-        "Patina": lambda x: patina_texture(x),
-        "Weathered": lambda x: weathered_texture(x),
-        "Aged": lambda x: aged_texture(x),
-        "Vintage": lambda x: vintage_texture(x),
-        "Antique": lambda x: antique_texture(x),
-        "Distressed": lambda x: distressed_texture(x),
-        "Worn": lambda x: worn_texture(x),
-        "Scratched": lambda x: scratched_texture(x),
-        "Cracked": lambda x: cracked_texture(x),
-        "Peeling": lambda x: peeling_texture(x),
-        "Faded": lambda x: faded_texture(x),
-        "Stained": lambda x: stained_texture(x),
-        "Water Damage": lambda x: water_damage_texture(x),
-        "Fire Damage": lambda x: fire_damage_texture(x),
-        "Smoke Damage": lambda x: smoke_damage_texture(x),
-        "Dirt": lambda x: dirt_texture(x),
-        "Dust": lambda x: dust_texture(x),
-        "Grime": lambda x: grime_texture(x),
-        "Oil Stain": lambda x: oil_stain_texture(x),
-        "Grease": lambda x: grease_texture(x),
-        "Mold": lambda x: mold_texture(x),
-        "Moss": lambda x: moss_texture(x),
-        "Lichen": lambda x: lichen_texture(x),
-        "Algae": lambda x: algae_texture(x),
-        "Barnacles": lambda x: barnacles_texture(x),
-        "Coral": lambda x: coral_texture(x),
-        "Scales": lambda x: scales_texture(x),
-        "Feathers": lambda x: feathers_texture(x),
-        "Fur": lambda x: fur_texture(x),
-        "Hair": lambda x: hair_texture(x),
-        "Wool": lambda x: wool_texture(x),
-        "Cotton": lambda x: cotton_texture(x),
-        "Silk": lambda x: silk_texture(x),
-        "Velvet": lambda x: velvet_texture(x),
-        "Satin": lambda x: satin_texture(x),
-        "Lace": lambda x: lace_texture(x),
-        "Mesh": lambda x: mesh_texture(x),
-        "Net": lambda x: net_texture(x),
-        "Chain": lambda x: chain_texture(x),
-        "Wire": lambda x: wire_texture(x),
-        "Rope": lambda x: rope_texture(x),
-        "Cord": lambda x: cord_texture(x),
-        "Thread": lambda x: thread_texture(x),
-        "Yarn": lambda x: yarn_texture(x),
-        "Knitted": lambda x: knitted_texture(x),
-        "Woven": lambda x: woven_texture(x),
-        "Braided": lambda x: braided_texture(x),
-        "Twisted": lambda x: twisted_texture(x),
-        "Coiled": lambda x: coiled_texture(x),
-        "Spiral": lambda x: spiral_texture(x),
-        "Helical": lambda x: helical_texture(x),
-        "Fractal": lambda x: fractal_texture(x),
-        "Perlin Noise": lambda x: perlin_noise_texture(x),
-        "Simplex Noise": lambda x: simplex_noise_texture(x),
-        "Turbulence": lambda x: turbulence_texture(x),
-        "Ridged": lambda x: ridged_texture(x),
-        "Billowy": lambda x: billowy_texture(x),
-        "Voronoi": lambda x: voronoi_texture(x),
-        "Cellular": lambda x: cellular_texture(x),
-        "Honeycomb": lambda x: honeycomb_texture(x),
-        "Bubble": lambda x: bubble_texture(x),
-        "Foam": lambda x: foam_texture(x),
-        "Splash": lambda x: splash_texture(x),
-        "Ripple": lambda x: ripple_texture(x),
-        "Wave": lambda x: wave_texture(x),
-        "Interference": lambda x: interference_texture(x),
-        "Moire": lambda x: moire_texture(x),
-        "Stripe": lambda x: stripe_texture(x),
-        "Plaid": lambda x: plaid_texture(x),
-        "Checkered": lambda x: checkered_texture(x),
-        "Grid": lambda x: grid_texture(x),
-        "Dot": lambda x: dot_texture(x),
-        "Halftone": lambda x: halftone_texture(x),
-        "Dithering": lambda x: dithering_texture(x),
-        "Stippling": lambda x: stippling_texture(x),
-        "Crosshatch": lambda x: crosshatch_texture(x),
-        "Hatching": lambda x: hatching_texture(x),
-        "Engraving": lambda x: engraving_texture(x),
-        "Etching": lambda x: etching_texture(x),
-        "Woodcut": lambda x: woodcut_texture(x),
-        "Linocut": lambda x: linocut_texture(x),
-        "Screenprint": lambda x: screenprint_texture(x),
-        "Lithograph": lambda x: lithograph_texture(x),
-        "Offset Print": lambda x: offset_print_texture(x),
-        "Newsprint": lambda x: newsprint_texture(x),
-        "Magazine": lambda x: magazine_texture(x),
-        "Book Paper": lambda x: book_paper_texture(x),
-        "Cardboard": lambda x: cardboard_texture(x),
-        "Corrugated": lambda x: corrugated_texture(x),
-        "Recycled": lambda x: recycled_texture(x),
-        "Handmade": lambda x: handmade_texture(x),
-        "Parchment": lambda x: parchment_texture(x),
-        "Vellum": lambda x: vellum_texture(x)
-    }
-    
-    return effects.get(effect_type, lambda x: x)(img_array)
-
-# Helper functions for basic effects
-def apply_sepia(img_array):
-    sepia_filter = np.array([
-        [0.393, 0.769, 0.189],
-        [0.349, 0.686, 0.168],
-        [0.272, 0.534, 0.131]
-    ])
-    sepia_img = img_array.dot(sepia_filter.T)
-    return np.clip(sepia_img, 0, 255).astype(np.uint8)
-
-def color_temperature(img_array, temp_type):
-    if temp_type == "cool":
-        img_array[:, :, 0] = img_array[:, :, 0] * 0.5
-        img_array[:, :, 1] = img_array[:, :, 1] * 0.8
-    else:  # warm
-        img_array[:, :, 2] = img_array[:, :, 2] * 0.5
-        img_array[:, :, 1] = img_array[:, :, 1] * 0.9
-    return img_array.astype(np.uint8)
-
-def neon_effect(img_array):
-    # Enhanced saturation and contrast for neon look
-    img = Image.fromarray(img_array)
-    enhancer = ImageEnhance.Color(img)
-    img = enhancer.enhance(2.5)
-    enhancer = ImageEnhance.Contrast(img)
-    img = enhancer.enhance(1.8)
-    return np.array(img)
-
-# Placeholder functions for complex effects (simplified implementations)
 def oil_painting(img_array):
-    return cv2.bilateralFilter(img_array, 20, 80, 80)
+    return cv2.xphoto.oilPainting(img_array, 7, 1)
 
 def watercolor_effect(img_array):
-    for _ in range(3):
-        img_array = cv2.bilateralFilter(img_array, 9, 200, 200)
-    return img_array
+    return cv2.stylization(img_array, sigma_s=60, sigma_r=0.6)
 
 def cartoon_effect(img_array):
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-    edges = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 9, 9)
-    color = cv2.bilateralFilter(img_array, 9, 300, 300)
+    edges = cv2.adaptiveThreshold(cv2.medianBlur(gray, 7), 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 9, 2)
     edges = cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
+    color = cv2.bilateralFilter(img_array, 9, 300, 300)
     return cv2.bitwise_and(color, edges)
 
 def mirror_quad(img_array):
     h, w = img_array.shape[:2]
+    if h == 0 or w == 0: return img_array
     small_img = cv2.resize(img_array, (w//2, h//2))
     
     top_left = small_img
@@ -1470,49 +1120,57 @@ def mirror_quad(img_array):
 def kaleidoscope(img_array, segments):
     h, w = img_array.shape[:2]
     center_x, center_y = w // 2, h // 2
+    
+    wedge = np.zeros_like(img_array)
+    mask = np.zeros((h, w), dtype=np.uint8)
+    
+    angle = 360 / (2 * segments)
+    pts = np.array([
+        (center_x, center_y),
+        (w, center_y),
+        (w, int(center_y - w * np.tan(np.deg2rad(angle))))
+    ], dtype=np.int32)
+    
+    cv2.fillConvexPoly(mask, pts, 255)
+    wedge = cv2.bitwise_and(img_array, img_array, mask=mask)
+    
     result = np.zeros_like(img_array)
-    
     for i in range(segments):
-        angle = i * 360 / segments
-        M = cv2.getRotationMatrix2D((center_x, center_y), angle, 1)
-        rotated = cv2.warpAffine(img_array, M, (w, h))
-        result = cv2.add(result, rotated // segments)
-    
+        rotated_wedge = rotate_image(wedge, i * 2 * angle)
+        flipped_wedge = cv2.flip(rotated_wedge, 1)
+        result = cv2.add(result, rotated_wedge)
+        result = cv2.add(result, flipped_wedge)
+
     return result
 
 def rotate_image(img_array, angle):
     h, w = img_array.shape[:2]
     center = (w // 2, h // 2)
     M = cv2.getRotationMatrix2D(center, angle, 1)
-    return cv2.warpAffine(img_array, M, (w, h))
+    return cv2.warpAffine(img_array, M, (w, h), borderMode=cv2.BORDER_REPLICATE)
 
 def motion_blur(img_array, direction):
+    size = 15
     if direction == "horizontal":
-        kernel = np.zeros((15, 15))
-        kernel[int((15-1)/2), :] = np.ones(15)
-        kernel = kernel / 15
+        kernel = np.zeros((size, size))
+        kernel[int((size-1)/2), :] = np.ones(size)
     else:  # vertical
-        kernel = np.zeros((15, 15))
-        kernel[:, int((15-1)/2)] = np.ones(15)
-        kernel = kernel / 15
+        kernel = np.zeros((size, size))
+        kernel[:, int((size-1)/2)] = np.ones(size)
+    kernel = kernel / size
     return cv2.filter2D(img_array, -1, kernel)
 
-def canny_edge(gray):
-    edges = cv2.Canny(gray, 50, 150)
-    return cv2.cvtColor(edges, cv2.COLOR_GRAY2RGB)
-
-# Add simple implementations for other effect categories
 def canvas_texture(img_array):
-    noise = np.random.normal(0, 10, img_array.shape)
-    return np.clip(img_array + noise, 0, 255).astype(np.uint8)
+    noise = np.random.normal(0, 10, img_array.shape).astype(np.int16)
+    return np.clip(img_array.astype(np.int16) + noise, 0, 255).astype(np.uint8)
 
 def retro_color(img_array, color):
+    result = img_array.copy()
     if color == "pink":
-        img_array[:, :, 0] = np.minimum(img_array[:, :, 0] * 1.3, 255)
-        img_array[:, :, 2] = np.minimum(img_array[:, :, 2] * 1.2, 255)
-    return img_array.astype(np.uint8)
+        result[:, :, 0] = np.clip(result[:, :, 0] * 1.3, 0, 255)
+        result[:, :, 2] = np.clip(result[:, :, 2] * 1.2, 0, 255)
+    return result.astype(np.uint8)
 
-# Simplified implementations for other effects
 def cyberpunk_effect(img_array):
     return neon_effect(img_array)
 
@@ -1523,15 +1181,16 @@ def ocean_effect(img_array):
     return color_temperature(img_array, "cool")
 
 def forest_effect(img_array):
-    img_array[:, :, 1] = np.minimum(img_array[:, :, 1] * 1.2, 255)
-    return img_array.astype(np.uint8)
+    result = img_array.copy()
+    result[:, :, 1] = np.clip(result[:, :, 1] * 1.2, 0, 255)
+    return result.astype(np.uint8)
 
 def desert_effect(img_array):
-    img_array[:, :, 0] = np.minimum(img_array[:, :, 0] * 1.2, 255)
-    img_array[:, :, 1] = np.minimum(img_array[:, :, 1] * 1.1, 255)
-    return img_array.astype(np.uint8)
+    result = img_array.copy()
+    result[:, :, 0] = np.clip(result[:, :, 0] * 1.2, 0, 255)
+    result[:, :, 1] = np.clip(result[:, :, 1] * 1.1, 0, 255)
+    return result.astype(np.uint8)
 
-# Add other simplified effect implementations
 def aurora_effect(img_array):
     return neon_effect(img_array)
 
@@ -1552,7 +1211,7 @@ def rainbow_effect(img_array):
     return neon_effect(img_array)
 
 def pastel_effect(img_array):
-    return (img_array * 0.7 + 255 * 0.3).astype(np.uint8)
+    return (img_array.astype(np.float32) * 0.7 + 255 * 0.3).astype(np.uint8)
 
 def noir_effect(img_array):
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
@@ -1562,11 +1221,11 @@ def technicolor_effect(img_array):
     return neon_effect(img_array)
 
 def infrared_effect(img_array):
-    # Swap red and near-infrared channels simulation
-    temp = img_array[:, :, 0].copy()
-    img_array[:, :, 0] = img_array[:, :, 2]
-    img_array[:, :, 2] = temp
-    return img_array
+    result = img_array.copy()
+    temp = result[:, :, 0].copy()
+    result[:, :, 0] = result[:, :, 2]
+    result[:, :, 2] = temp
+    return result
 
 def xray_effect(img_array):
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
@@ -1584,19 +1243,16 @@ def negative_effect(img_array):
 def solarize_effect(img_array):
     return np.where(img_array < 128, img_array, 255 - img_array).astype(np.uint8)
 
-def posterize_effect(img_array, levels=4):
-    return ((img_array // (256 // levels)) * (256 // levels)).astype(np.uint8)
-
 def duotone_effect(img_array, color):
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+    gray_3c = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
     if color == "blue":
-        return cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB) * [0.3, 0.3, 1.0]
+        return (gray_3c.astype(np.float32) * [0.3, 0.3, 1.0]).astype(np.uint8)
     elif color == "red":
-        return cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB) * [1.0, 0.3, 0.3]
+        return (gray_3c.astype(np.float32) * [1.0, 0.3, 0.3]).astype(np.uint8)
     else:  # green
-        return cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB) * [0.3, 1.0, 0.3]
+        return (gray_3c.astype(np.float32) * [0.3, 1.0, 0.3]).astype(np.uint8)
 
-# Add more simplified implementations for the remaining effects
 def split_tone(img_array):
     return color_temperature(img_array, "warm")
 
@@ -1604,7 +1260,7 @@ def color_pop(img_array, color):
     return duotone_effect(img_array, color)
 
 def vintage_fade(img_array):
-    return (img_array * 0.8 + 50).astype(np.uint8)
+    return np.clip(img_array.astype(np.float32) * 0.8 + 50, 0, 255).astype(np.uint8)
 
 def cross_process(img_array):
     return neon_effect(img_array)
@@ -1628,10 +1284,9 @@ def analog_effect(img_array):
     return canvas_texture(img_array)
 
 def glitch_effect(img_array):
-    noise = np.random.randint(0, 50, img_array.shape)
-    return np.clip(img_array + noise, 0, 255).astype(np.uint8)
+    noise = np.random.randint(0, 50, img_array.shape, dtype=np.int16)
+    return np.clip(img_array.astype(np.int16) + noise, 0, 255).astype(np.uint8)
 
-# Add implementations for remaining effects using similar patterns
 def hologram_effect(img_array):
     return neon_effect(img_array)
 
@@ -1656,249 +1311,9 @@ def bit_16_effect(img_array):
 def gameboy_effect(img_array):
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
     posterized = posterize_effect(gray, 4)
-    return cv2.cvtColor(posterized, cv2.COLOR_GRAY2RGB) * [0.6, 0.7, 0.4]
+    gb_color = cv2.cvtColor(posterized, cv2.COLOR_GRAY2RGB)
+    return (gb_color.astype(np.float32) * [0.6, 0.7, 0.4]).astype(np.uint8)
 
-# Continue with other effect implementations using similar patterns...
-# (For brevity, I'll include key implementations that demonstrate the pattern)
-
-# Main App
-def main():
-    st.title("🎨 Image Playground - 500+ Creative Tools!")
-    st.markdown("### Transform your images with endless creative possibilities!")
-    
-    # Sidebar
-    st.sidebar.title("🛠️ Tool Selection")
-    
-    # File uploader with session state
-    uploaded_file = st.file_uploader(
-        "Choose an image...", 
-        type=['png', 'jpg', 'jpeg', 'bmp', 'tiff'],
-        help="Upload any image to start creating!"
-    )
-    
-    # Handle image upload and maintain state
-    if uploaded_file is not None and st.session_state.original_img is None:
-        st.session_state.original_img = load_image(uploaded_file)
-        st.session_state.processed_img = st.session_state.original_img.copy()
-    
-    if st.session_state.original_img is not None:
-        # Display images
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown('<div class="tool-header">📸 Original Image</div>', unsafe_allow_html=True)
-            st.image(st.session_state.original_img, use_container_width=True)
-        
-        # Tool categories
-        tool_category = st.sidebar.selectbox(
-            "Select Tool Category",
-            [
-                "🎨 Color Effects (100)",
-                "✏️ Artistic Effects (100)", 
-                "🔄 Geometric Effects (100)",
-                "🎭 Filter Effects (100)",
-                "🎪 Texture Effects (100)"
-            ]
-        )
-        
-        # Reset button
-        if st.sidebar.button("🔄 Reset to Original"):
-            st.session_state.processed_img = st.session_state.original_img.copy()
-            st.experimental_rerun()
-        
-        # Tool implementations
-        if "Color Effects" in tool_category:
-            effect_options = [
-                "Vintage Sepia", "Cool Blue", "Warm Orange", "Neon Glow", "Retro Pink", 
-                "Cyberpunk", "Sunset", "Ocean Depth", "Forest Green", "Desert Sand",
-                "Aurora", "Fire Red", "Ice Blue", "Gold Rush", "Silver Chrome",
-                "Rainbow", "Pastel Dream", "Noir", "Technicolor", "Infrared",
-                "X-Ray", "Thermal", "Negative", "Solarize", "Posterize",
-                "Duotone Blue", "Duotone Red", "Duotone Green", "Split Tone", "Color Pop Red"
-                # Add more color effects here...
-            ]
-            
-            effect_type = st.sidebar.selectbox("Choose Color Effect", effect_options)
-            
-            if st.sidebar.button("Apply Effect"):
-                result = color_effects(st.session_state.original_img, effect_type)
-                if isinstance(result, np.ndarray):
-                    st.session_state.processed_img = Image.fromarray(result)
-                else:
-                    st.session_state.processed_img = result
-                st.experimental_rerun()
-        
-        elif "Artistic Effects" in tool_category:
-            effect_options = [
-                "Oil Painting", "Watercolor", "Acrylic Paint", "Pastel Drawing", "Pencil Sketch",
-                "Charcoal Drawing", "Ink Drawing", "Pen Sketch", "Crayon Art", "Chalk Art",
-                "Spray Paint", "Graffiti Style", "Pop Art", "Comic Book", "Manga Style",
-                "Anime Style", "Cartoon", "Caricature", "Impressionist", "Pointillism",
-                "Cubist", "Abstract", "Surreal", "Psychedelic", "Art Nouveau"
-                # Add more artistic effects here...
-            ]
-            
-            effect_type = st.sidebar.selectbox("Choose Artistic Effect", effect_options)
-            
-            if st.sidebar.button("Apply Effect"):
-                result = artistic_effects(st.session_state.original_img, effect_type)
-                if isinstance(result, np.ndarray):
-                    st.session_state.processed_img = Image.fromarray(result)
-                else:
-                    st.session_state.processed_img = result
-                st.experimental_rerun()
-        
-        elif "Geometric Effects" in tool_category:
-            effect_options = [
-                "Mirror Horizontal", "Mirror Vertical", "Mirror Diagonal", "Rotate 15°", "Rotate 30°",
-                "Rotate 45°", "Rotate 60°", "Rotate 90°", "Rotate 120°", "Rotate 135°",
-                "Rotate 180°", "Rotate 270°", "Kaleidoscope 4", "Kaleidoscope 6", "Kaleidoscope 8",
-                "Kaleidoscope 12", "Mirror Quad", "Mirror Octagon", "Triangular Tiling", "Hexagonal Tiling",
-                "Square Tiling", "Diamond Tiling", "Circular Pattern", "Spiral Pattern", "Radial Pattern"
-                # Add more geometric effects here...
-            ]
-            
-            effect_type = st.sidebar.selectbox("Choose Geometric Effect", effect_options)
-            
-            if st.sidebar.button("Apply Effect"):
-                result = geometric_effects(st.session_state.original_img, effect_type)
-                if isinstance(result, np.ndarray):
-                    st.session_state.processed_img = Image.fromarray(result)
-                else:
-                    st.session_state.processed_img = result
-                st.experimental_rerun()
-        
-        elif "Filter Effects" in tool_category:
-            effect_options = [
-                "Gaussian Blur", "Motion Blur H", "Motion Blur V", "Radial Blur", "Zoom Blur",
-                "Spin Blur", "Surface Blur", "Smart Blur", "Lens Blur", "Box Blur",
-                "Median Filter", "Bilateral Filter", "Non-local Means", "Wiener Filter", "Kuwahara Filter",
-                "Edge Detection", "Sobel X", "Sobel Y", "Sobel Combined", "Prewitt",
-                "Roberts", "Laplacian", "LoG", "DoG", "Gradient",
-                "Emboss", "Emboss 45°", "Bevel", "Ridge", "Valley"
-                # Add more filter effects here...
-            ]
-            
-            effect_type = st.sidebar.selectbox("Choose Filter Effect", effect_options)
-            
-            if st.sidebar.button("Apply Effect"):
-                result = filter_effects(st.session_state.original_img, effect_type)
-                if isinstance(result, np.ndarray):
-                    st.session_state.processed_img = Image.fromarray(result)
-                else:
-                    st.session_state.processed_img = result
-                st.experimental_rerun()
-        
-        elif "Texture Effects" in tool_category:
-            effect_options = [
-                "Canvas", "Paper", "Fabric", "Leather", "Wood Grain",
-                "Stone", "Marble", "Granite", "Sand", "Concrete",
-                "Metal", "Rust", "Corrosion", "Patina", "Weathered",
-                "Aged", "Vintage", "Antique", "Distressed", "Worn",
-                "Scratched", "Cracked", "Peeling", "Faded", "Stained"
-                # Add more texture effects here...
-            ]
-            
-            effect_type = st.sidebar.selectbox("Choose Texture Effect", effect_options)
-            
-            if st.sidebar.button("Apply Effect"):
-                result = texture_effects(st.session_state.original_img, effect_type)
-                if isinstance(result, np.ndarray):
-                    st.session_state.processed_img = Image.fromarray(result)
-                else:
-                    st.session_state.processed_img = result
-                st.experimental_rerun()
-        
-        # Display processed image
-        with col2:
-            st.markdown('<div class="tool-header">✨ Processed Image</div>', unsafe_allow_html=True)
-            st.image(st.session_state.processed_img, use_container_width=True)
-            
-            # Download button
-            download_button(
-                st.session_state.processed_img, 
-                f"processed_image.png", 
-                "📥 Download Processed Image"
-            )
-        
-        # Quick tools section
-        st.markdown("---")
-        st.markdown("### 🎯 Quick Tools")
-        
-        quick_cols = st.columns(6)
-        quick_effects = [
-            ("🔳 Grayscale", lambda: ImageOps.grayscale(st.session_state.original_img)),
-            ("🔄 Auto Contrast", lambda: ImageOps.autocontrast(st.session_state.original_img)),
-            ("🌀 Blur", lambda: st.session_state.original_img.filter(ImageFilter.BLUR)),
-            ("📐 Find Edges", lambda: st.session_state.original_img.filter(ImageFilter.FIND_EDGES)),
-            ("🎨 Emboss", lambda: st.session_state.original_img.filter(ImageFilter.EMBOSS)),
-            ("✨ Sharpen", lambda: st.session_state.original_img.filter(ImageFilter.SHARPEN))
-        ]
-        
-        for i, (label, effect_func) in enumerate(quick_effects):
-            with quick_cols[i]:
-                if st.button(label, key=f"quick_{i}"):
-                    result = effect_func()
-                    if hasattr(result, 'convert'):
-                        st.session_state.processed_img = result.convert('RGB')
-                    else:
-                        st.session_state.processed_img = result
-                    st.experimental_rerun()
-        
-        # Tool counter
-        st.sidebar.markdown("---")
-        st.sidebar.markdown(f"**🎉 Total Tools Available: 500+**")
-        st.sidebar.markdown("**Categories:**")
-        st.sidebar.markdown("• 100 Color Effects")
-        st.sidebar.markdown("• 100 Artistic Effects") 
-        st.sidebar.markdown("• 100 Geometric Effects")
-        st.sidebar.markdown("• 100 Filter Effects")
-        st.sidebar.markdown("• 100 Texture Effects")
-    
-    else:
-        # Welcome screen
-        st.markdown("""
-        <div style='text-align: center; padding: 50px;'>
-            <h2>🌟 Welcome to Image Playground! 🌟</h2>
-            <p style='font-size: 18px;'>Upload an image above to start exploring 500+ creative tools!</p>
-            <p>✨ No AI models required - Pure Python magic! ✨</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Feature showcase
-        st.markdown("### 🛠️ Available Tool Categories:")
-        
-        features_cols = st.columns(5)
-        categories = [
-            ("🎨 Color Effects", "100 tools for color manipulation, temperature, vintage effects, and artistic coloring"),
-            ("✏️ Artistic Effects", "100 tools for painting, drawing, sketching, and artistic style transfers"),
-            ("🔄 Geometric Effects", "100 tools for rotations, mirrors, patterns, and geometric transformations"),
-            ("🎭 Filter Effects", "100 tools for blur, sharpen, edge detection, and advanced filtering"),
-            ("🎪 Texture Effects", "100 tools for adding textures, materials, and surface effects")
-        ]
-        
-        for i, (title, description) in enumerate(categories):
-            with features_cols[i]:
-                st.markdown(f"""
-                **{title}**
-                
-                {description}
-                """)
-        
-        # Sample effects preview
-        st.markdown("---")
-        st.markdown("### 🎨 Sample Effects Preview")
-        
-        sample_cols = st.columns(4)
-        sample_effects = [
-            "🌅 Vintage Sepia", "🎆 Neon Glow", "🖼️ Oil Painting", "🔮 Kaleidoscope"
-        ]
-        
-        for i, effect in enumerate(sample_effects):
-            with sample_cols[i]:
-                st.markdown(f"**{effect}**")
-                st.markdown("Upload an image to try this effect!")
-
-# Add more simplified implementations for missing functions
 def sepia_warm(img_array):
     return apply_sepia(img_array)
 
@@ -1908,14 +1323,14 @@ def sepia_cool(img_array):
 
 def monochrome_color(img_array, color):
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-    mono = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB)
+    mono = cv2.cvtColor(gray, cv2.COLOR_GRAY2RGB).astype(np.float32)
     if color == "red":
-        mono[:, :, 1:] = mono[:, :, 1:] * 0.3
+        mono[:, :, 1:] *= 0.3
     elif color == "green":
-        mono[:, :, [0,2]] = mono[:, :, [0,2]] * 0.3
+        mono[:, :, [0,2]] *= 0.3
     else:  # blue
-        mono[:, :, :2] = mono[:, :, :2] * 0.3
-    return mono
+        mono[:, :, :2] *= 0.3
+    return mono.astype(np.uint8)
 
 def color_splash_random(img_array):
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
@@ -1937,56 +1352,48 @@ def gradient_map(img_array, gradient_type):
     return cv2.cvtColor(colored, cv2.COLOR_BGR2RGB)
 
 def false_color_effect(img_array):
-    # Simulate false color imaging
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-    return cv2.applyColorMap(gray, cv2.COLORMAP_JET)
+    colormap = cv2.applyColorMap(gray, cv2.COLORMAP_JET)
+    return cv2.cvtColor(colormap, cv2.COLOR_BGR2RGB)
 
 def channel_mixer(img_array):
-    # Simple channel mixing
     mixed = img_array.copy()
-    mixed[:, :, 0] = img_array[:, :, 1]  # Red = Green
-    mixed[:, :, 1] = img_array[:, :, 2]  # Green = Blue
-    mixed[:, :, 2] = img_array[:, :, 0]  # Blue = Red
+    mixed[:, :, 0] = img_array[:, :, 1]
+    mixed[:, :, 1] = img_array[:, :, 2]
+    mixed[:, :, 2] = img_array[:, :, 0]
     return mixed
 
 def hsl_adjust(img_array):
-    # Simplified HSL adjustment
-    hsv = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV)
-    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * 1.2, 0, 255)  # Increase saturation
-    return cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+    hsv = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV).astype(np.float32)
+    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * 1.2, 0, 255)
+    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
 
 def lab_color_effect(img_array):
-    # LAB color space effect
-    lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB)
-    lab[:, :, 1] = np.clip(lab[:, :, 1] * 1.5, 0, 255)  # Enhance A channel
-    return cv2.cvtColor(lab, cv2.COLOR_LAB2RGB)
+    lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB).astype(np.float32)
+    lab[:, :, 1] = np.clip(lab[:, :, 1] * 1.5, 0, 255)
+    return cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
 
 def cmyk_effect(img_array):
-    # Simulate CMYK printing effect
     return posterize_effect(img_array, 6)
 
 def complementary_colors(img_array):
-    # Enhance complementary colors
     hsv = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV)
-    hsv[:, :, 0] = (hsv[:, :, 0] + 90) % 180  # Shift hue by 90 degrees
+    hsv[:, :, 0] = (hsv[:, :, 0] + 90) % 180
     return cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
 
 def triadic_colors(img_array):
-    # Triadic color scheme
     hsv = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV)
-    hsv[:, :, 0] = (hsv[:, :, 0] + 60) % 180  # Shift hue by 60 degrees
+    hsv[:, :, 0] = (hsv[:, :, 0] + 60) % 180
     return cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
 
 def analogous_colors(img_array):
-    # Analogous color scheme
     hsv = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV)
-    hsv[:, :, 0] = (hsv[:, :, 0] + 30) % 180  # Shift hue by 30 degrees
+    hsv[:, :, 0] = (hsv[:, :, 0] + 30) % 180
     return cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
 
 def monochromatic_scheme(img_array):
-    # Monochromatic color scheme
     hsv = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV)
-    hsv[:, :, 0] = hsv[:, :, 0][0, 0]  # Use single hue
+    hsv[:, :, 0] = hsv[0, 0, 0]
     return cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
 
 def color_harmony(img_array):
@@ -1996,15 +1403,14 @@ def saturation_boost(img_array):
     return hsl_adjust(img_array)
 
 def desaturate_effect(img_array):
-    hsv = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV)
-    hsv[:, :, 1] = hsv[:, :, 1] * 0.3  # Reduce saturation
-    return cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+    hsv = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV).astype(np.float32)
+    hsv[:, :, 1] *= 0.3
+    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2RGB)
 
 def vibrance_effect(img_array):
     return saturation_boost(img_array)
 
 def kelvin_temperature(img_array, kelvin):
-    # Simulate different color temperatures
     if kelvin < 3000:
         return color_temperature(img_array, "warm")
     elif kelvin > 6000:
@@ -2013,46 +1419,41 @@ def kelvin_temperature(img_array, kelvin):
         return img_array
 
 def tint_effect(img_array, tint):
+    result = img_array.copy().astype(np.float32)
     if tint == "magenta":
-        img_array[:, :, [0, 2]] = np.minimum(img_array[:, :, [0, 2]] * 1.1, 255)
+        result[:, :, [0, 2]] = np.clip(result[:, :, [0, 2]] * 1.1, 0, 255)
     else:  # green
-        img_array[:, :, 1] = np.minimum(img_array[:, :, 1] * 1.1, 255)
-    return img_array.astype(np.uint8)
+        result[:, :, 1] = np.clip(result[:, :, 1] * 1.1, 0, 255)
+    return result.astype(np.uint8)
 
 def shadow_tint(img_array):
-    # Apply tint to shadow areas
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
     shadow_mask = gray < 100
-    img_array[shadow_mask] = tint_effect(img_array[shadow_mask], "magenta")
-    return img_array
+    result = img_array.copy()
+    result[shadow_mask] = tint_effect(result[shadow_mask], "magenta")
+    return result
 
 def highlight_tint(img_array):
-    # Apply tint to highlight areas
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
     highlight_mask = gray > 200
-    img_array[highlight_mask] = tint_effect(img_array[highlight_mask], "green")
-    return img_array
+    result = img_array.copy()
+    result[highlight_mask] = tint_effect(result[highlight_mask], "green")
+    return result
 
 def midtone_contrast(img_array):
-    # Enhance midtone contrast
-    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-    midtone_mask = (gray > 85) & (gray < 170)
-    enhancer = ImageEnhance.Contrast(Image.fromarray(img_array))
-    enhanced = np.array(enhancer.enhance(1.3))
-    img_array[midtone_mask] = enhanced[midtone_mask]
-    return img_array
+    lab = cv2.cvtColor(img_array, cv2.COLOR_RGB2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+    cl = clahe.apply(l)
+    limg = cv2.merge((cl,a,b))
+    return cv2.cvtColor(limg, cv2.COLOR_LAB2RGB)
 
 def color_curves(img_array):
-    # Simple S-curve adjustment
-    return np.power(img_array / 255.0, 0.8) * 255
+    return np.clip(np.power(img_array / 255.0, 0.8) * 255, 0, 255).astype(np.uint8)
 
 def auto_white_balance(img_array):
-    # Simple auto white balance
-    avg_color = np.mean(img_array, axis=(0, 1))
-    gray_world = np.array([128, 128, 128])
-    correction = gray_world / avg_color
-    corrected = img_array * correction
-    return np.clip(corrected, 0, 255).astype(np.uint8)
+    result = cv2.xphoto.createSimpleWB().balanceWhite(img_array)
+    return result
 
 def skin_tone_enhance(img_array):
     return retro_color(img_array, "pink")
@@ -2079,13 +1480,13 @@ def dynamic_range(img_array):
     return hdr_tone(img_array)
 
 def exposure_sim(img_array):
-    return (np.clip(img_array * 1.3, 0, 255)).astype(np.uint8)
+    return (np.clip(img_array.astype(np.float32) * 1.3, 0, 255)).astype(np.uint8)
 
 def film_curve(img_array):
     return color_curves(img_array)
 
 def digital_curve(img_array):
-    return np.clip(img_array * 1.1, 0, 255).astype(np.uint8)
+    return np.clip(img_array.astype(np.float32) * 1.1, 0, 255).astype(np.uint8)
 
 def s_curve(img_array):
     return color_curves(img_array)
@@ -2094,16 +1495,16 @@ def linear_curve(img_array):
     return img_array
 
 def log_curve(img_array):
-    return (np.log1p(img_array) / np.log1p(255) * 255).astype(np.uint8)
+    return (np.log1p(img_array.astype(np.float32)) / np.log1p(255) * 255).astype(np.uint8)
 
 def gamma_correct(img_array, gamma=2.2):
-    return np.power(img_array / 255.0, 1/gamma) * 255
+    return (np.power(img_array / 255.0, 1/gamma) * 255).astype(np.uint8)
 
 def white_point_adjust(img_array):
-    return np.clip(img_array * 1.1, 0, 255).astype(np.uint8)
+    return np.clip(img_array.astype(np.float32) * 1.1, 0, 255).astype(np.uint8)
 
 def black_point_adjust(img_array):
-    return np.maximum(img_array - 10, 0).astype(np.uint8)
+    return np.clip(img_array.astype(np.float32) - 10, 0, 255).astype(np.uint8)
 
 def color_balance_adjust(img_array):
     return auto_white_balance(img_array)
@@ -2111,14 +1512,16 @@ def color_balance_adjust(img_array):
 def shadow_recovery(img_array):
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
     shadow_mask = gray < 100
-    img_array[shadow_mask] = np.minimum(img_array[shadow_mask] * 1.3, 255)
-    return img_array.astype(np.uint8)
+    result = img_array.copy().astype(np.float32)
+    result[shadow_mask] = np.clip(result[shadow_mask] * 1.3, 0, 255)
+    return result.astype(np.uint8)
 
 def highlight_recovery(img_array):
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
     highlight_mask = gray > 200
-    img_array[highlight_mask] = img_array[highlight_mask] * 0.8
-    return img_array.astype(np.uint8)
+    result = img_array.copy().astype(np.float32)
+    result[highlight_mask] *= 0.8
+    return result.astype(np.uint8)
 
 # Artistic effect implementations
 def acrylic_effect(img_array):
@@ -2156,8 +1559,8 @@ def chalk_effect(img_array):
     return canvas_texture(desaturate_effect(img_array))
 
 def spray_paint(img_array):
-    noise = np.random.normal(0, 20, img_array.shape)
-    return np.clip(img_array + noise, 0, 255).astype(np.uint8)
+    noise = np.random.normal(0, 20, img_array.shape).astype(np.int16)
+    return np.clip(img_array.astype(np.int16) + noise, 0, 255).astype(np.uint8)
 
 def graffiti_style(img_array):
     return neon_effect(spray_paint(img_array))
@@ -2181,39 +1584,22 @@ def impressionist_effect(img_array):
     return watercolor_effect(img_array)
 
 def pointillism_effect(img_array):
-    # Simulate pointillism with dot pattern
     h, w = img_array.shape[:2]
     dot_size = 8
     result = img_array.copy()
     
     for y in range(0, h, dot_size):
         for x in range(0, w, dot_size):
-            if y + dot_size < h and x + dot_size < w:
+            if y + dot_size <= h and x + dot_size <= w:
                 avg_color = np.mean(img_array[y:y+dot_size, x:x+dot_size], axis=(0,1))
                 result[y:y+dot_size, x:x+dot_size] = avg_color
     
     return result.astype(np.uint8)
 
 def cubist_effect(img_array):
-    # Simple cubist-inspired geometric effect
     h, w = img_array.shape[:2]
-    result = np.zeros_like(img_array)
-    
-    # Create geometric segments
-    segments = 20
-    for i in range(segments):
-        x1, y1 = np.random.randint(0, w), np.random.randint(0, h)
-        x2, y2 = np.random.randint(0, w), np.random.randint(0, h)
-        
-        # Create triangular regions
-        mask = np.zeros((h, w), dtype=np.uint8)
-        points = np.array([[x1, y1], [x2, y2], [w//2, h//2]], dtype=np.int32)
-        cv2.fillPoly(mask, [points], 255)
-        
-        avg_color = np.mean(img_array[mask > 0], axis=0)
-        result[mask > 0] = avg_color
-    
-    return result.astype(np.uint8)
+    segments = segmentation.slic(img_array, n_segments=50, compactness=5)
+    return segmentation.mark_boundaries(img_array, segments)
 
 def abstract_effect(img_array):
     return cubist_effect(img_array)
@@ -2222,10 +1608,9 @@ def surreal_effect(img_array):
     return psychedelic_effect(img_array)
 
 def psychedelic_effect(img_array):
-    # Create psychedelic effect with color shifting
     hsv = cv2.cvtColor(img_array, cv2.COLOR_RGB2HSV)
-    hsv[:, :, 0] = (hsv[:, :, 0] + np.random.randint(0, 180)) % 180
-    hsv[:, :, 1] = 255  # Max saturation
+    hsv[:, :, 0] = (hsv[:, :, 0] + np.random.randint(30, 150)) % 180
+    hsv[:, :, 1] = 255
     return cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
 
 def art_nouveau_effect(img_array):
@@ -2271,15 +1656,13 @@ def blueprint_effect(img_array):
     gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
     inverted = 255 - gray
     blueprint = np.zeros_like(img_array)
-    blueprint[:, :, 2] = inverted  # Blue channel only
+    blueprint[:, :, 2] = inverted
     return blueprint
 
 def architectural_effect(img_array):
     return blueprint_effect(img_array)
 
-# Continue with more texture and pattern implementations...
 def stained_glass_effect(img_array):
-    # Simulate stained glass with segmentation
     segments = segmentation.slic(img_array, n_segments=100, compactness=10)
     result = img_array.copy()
     
@@ -2299,13 +1682,10 @@ def tile_art_effect(img_array):
 def pixel_art_effect(img_array):
     h, w = img_array.shape[:2]
     pixel_size = 16
+    if w < pixel_size or h < pixel_size: return img_array
     
-    # Downsample
     small = cv2.resize(img_array, (w//pixel_size, h//pixel_size), interpolation=cv2.INTER_NEAREST)
-    # Upsample back
-    pixelated = cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
-    
-    return pixelated
+    return cv2.resize(small, (w, h), interpolation=cv2.INTER_NEAREST)
 
 def cross_stitch_effect(img_array):
     return pixel_art_effect(img_array)
@@ -2316,7 +1696,6 @@ def embroidery_effect(img_array):
 def quilting_effect(img_array):
     return tile_art_effect(img_array)
 
-# Add more simplified implementations for remaining effects
 def wood_carving_effect(img_array):
     return emboss_filter(img_array)
 
@@ -2389,21 +1768,58 @@ def leaf_texture_effect(img_array):
 def sand_texture_effect(img_array):
     return sand_texture(img_array)
 
-# Basic texture implementations
+# Placeholder Artistic effects
+def water_ripple_effect(x): return x
+def fire_artistic_effect(x): return fire_effect(x)
+def ice_crystal_effect(x): return ice_effect(x)
+def lightning_effect(x): return x
+def cloud_formation_effect(x): return x
+def smoke_effect(x): return smoke_damage_texture(x)
+def mist_effect(x): return x
+def rain_effect(x): return x
+def snow_effect(x): return x
+def frost_effect(x): return x
+def dew_drops_effect(x): return x
+def bubble_effect(x): return x
+def lens_flare_effect(x): return x
+def light_rays_effect(x): return x
+def god_rays_effect(x): return x
+def bokeh_effect(x): return lens_blur(x)
+def double_exposure_effect(x): return blend_modes_effect(x)
+def multiple_exposure_effect(x): return x
+def long_exposure_effect(x): return motion_blur(x, 'horizontal')
+def motion_trail_effect(x): return motion_blur(x, 'vertical')
+def speed_lines_effect(x): return x
+def radial_blur_effect(x): return radial_blur(x)
+def zoom_blur_effect(x): return zoom_blur(x)
+def tilt_shift_effect(x): return x
+def miniature_effect(x): return tilt_shift_effect(x)
+def macro_effect(x): return sharpen_filter(x)
+def fisheye_effect(x): return x
+def wide_angle_effect(x): return x
+def telephoto_effect(x): return x
+def perspective_effect(x): return x
+def distortion_effect(x): return x
+def warping_effect(x): return x
+def morphing_effect(x): return x
+def liquify_effect(x): return x
+def pinch_effect(x): return x
+def punch_effect(x): return x
+def twirl_effect(x): return x
+def wave_effect(x): return wave_pattern(x)
+
 def paper_texture(img_array):
-    noise = np.random.normal(0, 8, img_array.shape)
-    return np.clip(img_array + noise, 0, 255).astype(np.uint8)
+    noise = np.random.normal(0, 8, img_array.shape).astype(np.int16)
+    return np.clip(img_array.astype(np.int16) + noise, 0, 255).astype(np.uint8)
 
 def fabric_texture(img_array):
-    # Create fabric weave pattern
     h, w = img_array.shape[:2]
-    weave = np.zeros((h, w))
+    weave = np.zeros((h, w), dtype=np.int16)
     
-    for y in range(h):
-        for x in range(w):
-            weave[y, x] = (np.sin(x/2) + np.sin(y/2)) * 10
+    y_coords, x_coords = np.indices((h, w))
+    weave = (np.sin(x_coords/2) + np.sin(y_coords/2)) * 10
     
-    result = img_array.copy()
+    result = img_array.copy().astype(np.int16)
     for c in range(3):
         result[:, :, c] = np.clip(result[:, :, c] + weave, 0, 255)
     
@@ -2411,13 +1827,11 @@ def fabric_texture(img_array):
 
 def wood_grain_texture(img_array):
     h, w = img_array.shape[:2]
-    grain = np.zeros((h, w))
+    grain = np.zeros((h, w), dtype=np.int16)
+    y_coords, x_coords = np.indices((h, w))
+    grain = np.sin(y_coords/5) * 15
     
-    for y in range(h):
-        for x in range(w):
-            grain[y, x] = np.sin(y/5) * 15
-    
-    result = img_array.copy()
+    result = img_array.copy().astype(np.int16)
     for c in range(3):
         result[:, :, c] = np.clip(result[:, :, c] + grain, 0, 255)
     
@@ -2425,13 +1839,10 @@ def wood_grain_texture(img_array):
 
 def marble_texture(img_array):
     h, w = img_array.shape[:2]
-    marble = np.zeros((h, w))
+    y_coords, x_coords = np.indices((h, w))
+    marble = np.sin((x_coords + y_coords)/10) * 20
     
-    for y in range(h):
-        for x in range(w):
-            marble[y, x] = np.sin((x + y)/10) * 20
-    
-    result = img_array.copy()
+    result = img_array.copy().astype(np.int16)
     for c in range(3):
         result[:, :, c] = np.clip(result[:, :, c] + marble, 0, 255)
     
@@ -2444,25 +1855,16 @@ def metal_texture(img_array):
     return chrome_effect(img_array)
 
 def leather_texture(img_array):
-    noise = np.random.normal(0, 15, img_array.shape)
-    return np.clip(img_array + noise, 0, 255).astype(np.uint8)
+    noise = np.random.normal(0, 15, img_array.shape).astype(np.int16)
+    return np.clip(img_array.astype(np.int16) + noise, 0, 255).astype(np.uint8)
 
 def sand_texture(img_array):
-    noise = np.random.normal(0, 20, img_array.shape)
-    return np.clip(img_array + noise, 0, 255).astype(np.uint8)
+    noise = np.random.normal(0, 20, img_array.shape).astype(np.int16)
+    return np.clip(img_array.astype(np.int16) + noise, 0, 255).astype(np.uint8)
 
 # Geometric pattern implementations
 def mirror_diagonal(img_array):
-    h, w = img_array.shape[:2]
-    result = img_array.copy()
-    
-    # Mirror along diagonal
-    for y in range(h):
-        for x in range(w):
-            if x < y and y < w and x < h:
-                result[y, x] = img_array[x, y]
-    
-    return result
+    return cv2.transpose(img_array)
 
 def triangular_tiling(img_array):
     return mosaic_effect(img_array)
@@ -2479,32 +1881,23 @@ def diamond_tiling(img_array):
 def circular_pattern(img_array):
     h, w = img_array.shape[:2]
     center_x, center_y = w//2, h//2
-    
+    y_coords, x_coords = np.indices((h, w))
+    distance = np.sqrt((x_coords - center_x)**2 + (y_coords - center_y)**2)
+    mask = (distance % 20) < 10
     result = np.zeros_like(img_array)
-    
-    for y in range(h):
-        for x in range(w):
-            distance = np.sqrt((x - center_x)**2 + (y - center_y)**2)
-            if int(distance) % 20 < 10:
-                result[y, x] = img_array[y, x]
-    
+    result[mask] = img_array[mask]
     return result
 
 def spiral_pattern(img_array):
     h, w = img_array.shape[:2]
     center_x, center_y = w//2, h//2
-    
+    y_coords, x_coords = np.indices((h, w))
+    angle = np.arctan2(y_coords - center_y, x_coords - center_x)
+    distance = np.sqrt((x_coords - center_x)**2 + (y_coords - center_y)**2)
+    spiral_value = (angle * distance / 50) % (2 * np.pi)
+    mask = spiral_value < np.pi
     result = np.zeros_like(img_array)
-    
-    for y in range(h):
-        for x in range(w):
-            angle = np.arctan2(y - center_y, x - center_x)
-            distance = np.sqrt((x - center_x)**2 + (y - center_y)**2)
-            spiral_value = (angle * distance / 50) % (2 * np.pi)
-            
-            if spiral_value < np.pi:
-                result[y, x] = img_array[y, x]
-    
+    result[mask] = img_array[mask]
     return result
 
 def radial_pattern(img_array):
@@ -2519,22 +1912,17 @@ def grid_pattern(img_array):
 def checkerboard_pattern(img_array):
     h, w = img_array.shape[:2]
     result = img_array.copy()
-    
-    for y in range(h):
-        for x in range(w):
-            if (x//20 + y//20) % 2:
-                result[y, x] = 255 - result[y, x]
-    
+    y_coords, x_coords = np.indices((h, w))
+    mask = ((x_coords//20 + y_coords//20) % 2).astype(bool)
+    result[mask] = 255 - result[mask]
     return result
 
 def stripe_pattern(img_array):
     h, w = img_array.shape[:2]
     result = img_array.copy()
-    
-    for y in range(h):
-        if y % 20 < 10:
-            result[y, :] = 255 - result[y, :]
-    
+    y_coords, x_coords = np.indices((h, w))
+    mask = (y_coords % 20) < 10
+    result[mask] = 255 - result[mask]
     return result
 
 def zigzag_pattern(img_array):
@@ -2543,12 +1931,9 @@ def zigzag_pattern(img_array):
 def wave_pattern(img_array):
     h, w = img_array.shape[:2]
     result = img_array.copy()
-    
-    for y in range(h):
-        for x in range(w):
-            if np.sin(x/10) + np.sin(y/10) > 0:
-                result[y, x] = 255 - result[y, x]
-    
+    y_coords, x_coords = np.indices((h, w))
+    mask = (np.sin(x_coords/10) + np.sin(y_coords/10)) > 0
+    result[mask] = 255 - result[mask]
     return result
 
 def sine_wave_pattern(img_array):
@@ -2557,15 +1942,11 @@ def sine_wave_pattern(img_array):
 def cosine_wave_pattern(img_array):
     h, w = img_array.shape[:2]
     result = img_array.copy()
-    
-    for y in range(h):
-        for x in range(w):
-            if np.cos(x/10) + np.cos(y/10) > 0:
-                result[y, x] = 255 - result[y, x]
-    
+    y_coords, x_coords = np.indices((h, w))
+    mask = (np.cos(x_coords/10) + np.cos(y_coords/10)) > 0
+    result[mask] = 255 - result[mask]
     return result
 
-# Add more pattern implementations (simplified)
 def triangle_wave_pattern(img_array):
     return zigzag_pattern(img_array)
 
@@ -2630,9 +2011,6 @@ def art_deco_pattern(img_array):
     return geometric_pattern_art_deco(img_array)
 
 def geometric_effects(img, effect_type):
-    img_array = np.array(img)
-
-    # This is a placeholder for a more complex octagon mirror effect
     def mirror_octagon(img_array):
         return kaleidoscope(img_array, 8)
 
@@ -2746,12 +2124,18 @@ def geometric_effects(img, effect_type):
         "Blend Modes": lambda x: blend_modes_effect(x)
     }
     
+    if img is None:
+        return effects
+        
+    img_array = np.array(img)
     return effects.get(effect_type, lambda x: x)(img_array)
 
-# Filter Effects (100 tools)
 def filter_effects(img, effect_type):
-    img_array = np.array(img)
-    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY) if len(img_array.shape) == 3 else img_array
+    img_array = None
+    gray = None
+    if img is not None:
+        img_array = np.array(img)
+        gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY) if len(img_array.shape) == 3 else img_array
     
     effects = {
         "Gaussian Blur": lambda x: cv2.GaussianBlur(x, (15, 15), 0),
@@ -2860,13 +2244,13 @@ def filter_effects(img, effect_type):
         "Stereo": lambda x: stereo_filter(x),
         "Anaglyph": lambda x: anaglyph_filter(x)
     }
+
+    if img is None:
+        return effects
     
     return effects.get(effect_type, lambda x: x)(img_array)
 
-# Texture Effects (100 tools)
 def texture_effects(img, effect_type):
-    img_array = np.array(img)
-    
     effects = {
         "Canvas": lambda x: canvas_texture(x),
         "Paper": lambda x: paper_texture(x),
@@ -2976,6 +2360,10 @@ def texture_effects(img, effect_type):
         "Vellum": lambda x: vellum_texture(x)
     }
     
+    if img is None:
+        return effects
+        
+    img_array = np.array(img)
     return effects.get(effect_type, lambda x: x)(img_array)
 
 # Main App
@@ -2983,57 +2371,49 @@ def main():
     st.title("🎨 Image Playground - 500+ Creative Tools!")
     st.markdown("### Transform your images with endless creative possibilities!")
     
-    # Sidebar
     st.sidebar.title("🛠️ Tool Selection")
     
-    # File uploader with session state
     uploaded_file = st.file_uploader(
         "Choose an image...", 
         type=['png', 'jpg', 'jpeg', 'bmp', 'tiff'],
         help="Upload any image to start creating!"
     )
     
-    # Handle image upload and maintain state
     if uploaded_file is not None:
-        # Check if it's a new image
-        # Using a simple check on file name and size for this example
-        if (st.session_state.get('uploaded_file_name') != uploaded_file.name or 
-            st.session_state.get('uploaded_file_size') != uploaded_file.size):
+        if (st.session_state.uploaded_file_name != uploaded_file.name or 
+            st.session_state.uploaded_file_size != uploaded_file.size):
             st.session_state.original_img = load_image(uploaded_file)
             st.session_state.processed_img = st.session_state.original_img.copy()
             st.session_state.uploaded_file_name = uploaded_file.name
             st.session_state.uploaded_file_size = uploaded_file.size
     
     if st.session_state.original_img is not None:
-        # Display images
         col1, col2 = st.columns(2)
         with col1:
             st.markdown('<div class="tool-header">📸 Original Image</div>', unsafe_allow_html=True)
             st.image(st.session_state.original_img, use_container_width=True)
         
-        # Tool categories
         tool_category = st.sidebar.selectbox(
             "Select Tool Category",
             [
-                "🎨 Color Effects (100)",
-                "✏️ Artistic Effects (100)", 
-                "🔄 Geometric Effects (100)",
-                "🎭 Filter Effects (100)",
-                "🎪 Texture Effects (100)"
+                "🎨 Color Effects",
+                "✏️ Artistic Effects", 
+                "🔄 Geometric Effects",
+                "🎭 Filter Effects",
+                "🎪 Texture Effects"
             ]
         )
         
-        # Reset button
         if st.sidebar.button("🔄 Reset to Original"):
             st.session_state.processed_img = st.session_state.original_img.copy()
             st.rerun()
         
         # Tool implementations
         if "Color Effects" in tool_category:
-            effect_options = list(color_effects(None, "").keys()) # Dummy call to get keys
+            effect_options = list(color_effects(None, "").keys())
             effect_type = st.sidebar.selectbox("Choose Color Effect", effect_options)
             
-            if st.sidebar.button("Apply Color Effect"):
+            if st.sidebar.button("Apply Color Effect", key="color_apply"):
                 with st.spinner('Applying effect...'):
                     result = color_effects(st.session_state.processed_img, effect_type)
                     st.session_state.processed_img = Image.fromarray(result.astype('uint8'))
@@ -3043,7 +2423,7 @@ def main():
             effect_options = list(artistic_effects(None, "").keys())
             effect_type = st.sidebar.selectbox("Choose Artistic Effect", effect_options)
             
-            if st.sidebar.button("Apply Artistic Effect"):
+            if st.sidebar.button("Apply Artistic Effect", key="artistic_apply"):
                 with st.spinner('Applying effect...'):
                     result = artistic_effects(st.session_state.processed_img, effect_type)
                     st.session_state.processed_img = Image.fromarray(result.astype('uint8'))
@@ -3053,7 +2433,7 @@ def main():
             effect_options = list(geometric_effects(None, "").keys())
             effect_type = st.sidebar.selectbox("Choose Geometric Effect", effect_options)
             
-            if st.sidebar.button("Apply Geometric Effect"):
+            if st.sidebar.button("Apply Geometric Effect", key="geometric_apply"):
                 with st.spinner('Applying effect...'):
                     result = geometric_effects(st.session_state.processed_img, effect_type)
                     st.session_state.processed_img = Image.fromarray(result.astype('uint8'))
@@ -3063,7 +2443,7 @@ def main():
             effect_options = list(filter_effects(None, "").keys())
             effect_type = st.sidebar.selectbox("Choose Filter Effect", effect_options)
             
-            if st.sidebar.button("Apply Filter Effect"):
+            if st.sidebar.button("Apply Filter Effect", key="filter_apply"):
                 with st.spinner('Applying effect...'):
                     result = filter_effects(st.session_state.processed_img, effect_type)
                     st.session_state.processed_img = Image.fromarray(result.astype('uint8'))
@@ -3073,25 +2453,22 @@ def main():
             effect_options = list(texture_effects(None, "").keys())
             effect_type = st.sidebar.selectbox("Choose Texture Effect", effect_options)
             
-            if st.sidebar.button("Apply Texture Effect"):
+            if st.sidebar.button("Apply Texture Effect", key="texture_apply"):
                 with st.spinner('Applying effect...'):
                     result = texture_effects(st.session_state.processed_img, effect_type)
                     st.session_state.processed_img = Image.fromarray(result.astype('uint8'))
                 st.rerun()
 
-        # Display processed image
         with col2:
             st.markdown('<div class="tool-header">✨ Processed Image</div>', unsafe_allow_html=True)
             st.image(st.session_state.processed_img, use_container_width=True)
             
-            # Download button
             download_button(
                 st.session_state.processed_img, 
                 f"processed_{st.session_state.uploaded_file_name}", 
                 "📥 Download Processed Image"
             )
         
-        # Quick tools section
         st.markdown("---")
         st.markdown("### 🎯 Quick Tools (Apply to current processed image)")
         
@@ -3111,18 +2488,16 @@ def main():
                     st.session_state.processed_img = effect_func(st.session_state.processed_img)
                     st.rerun()
         
-        # Tool counter
         st.sidebar.markdown("---")
         st.sidebar.markdown(f"**🎉 Total Tools Available: 500+**")
         st.sidebar.markdown("**Categories:**")
-        st.sidebar.markdown("• 100 Color Effects")
-        st.sidebar.markdown("• 100 Artistic Effects") 
-        st.sidebar.markdown("• 100 Geometric Effects")
-        st.sidebar.markdown("• 100 Filter Effects")
-        st.sidebar.markdown("• 100 Texture Effects")
+        st.sidebar.markdown("• Color Effects")
+        st.sidebar.markdown("• Artistic Effects") 
+        st.sidebar.markdown("• Geometric Effects")
+        st.sidebar.markdown("• Filter Effects")
+        st.sidebar.markdown("• Texture Effects")
     
     else:
-        # Welcome screen
         st.markdown("""
         <div style='text-align: center; padding: 50px; border-radius: 15px; background-color: rgba(255, 255, 255, 0.1);'>
             <h2>🌟 Welcome to Image Playground! 🌟</h2>
@@ -3131,16 +2506,15 @@ def main():
         </div>
         """, unsafe_allow_html=True)
         
-        # Feature showcase
         st.markdown("### 🛠️ Available Tool Categories:")
         
         features_cols = st.columns(5)
         categories = [
-            ("🎨 Color Effects", "100 tools for color manipulation, temperature, vintage effects, and artistic coloring."),
-            ("✏️ Artistic Effects", "100 tools for painting, drawing, sketching, and artistic style transfers."),
-            ("🔄 Geometric Effects", "100 tools for rotations, mirrors, patterns, and geometric transformations."),
-            ("🎭 Filter Effects", "100 tools for blur, sharpen, edge detection, and advanced filtering."),
-            ("🎪 Texture Effects", "100 tools for adding textures, materials, and surface effects.")
+            ("🎨 Color Effects", "Tools for color manipulation, temperature, vintage effects, and artistic coloring."),
+            ("✏️ Artistic Effects", "Tools for painting, drawing, sketching, and artistic style transfers."),
+            ("🔄 Geometric Effects", "Tools for rotations, mirrors, patterns, and geometric transformations."),
+            ("🎭 Filter Effects", "Tools for blur, sharpen, edge detection, and advanced filtering."),
+            ("🎪 Texture Effects", "Tools for adding textures, materials, and surface effects.")
         ]
         
         for i, (title, description) in enumerate(categories):
