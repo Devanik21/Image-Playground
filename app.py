@@ -14,7 +14,7 @@ from scipy.ndimage import uniform_filter, median_filter, maximum_filter, minimum
 
 # Set page config
 st.set_page_config(
-    page_title="🎨 Image Playground",
+    page_title="Image Playground",
     page_icon="🎨",
     layout="wide",
     initial_sidebar_state="expanded"
