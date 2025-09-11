@@ -1065,7 +1065,7 @@ def rope_texture(img_array):
     return canvas_texture(img_array)
 
 def cord_texture(img_array):
-    return rope_texture(_effects(img, effect_type)):
+    return rope_texture(_effects(img, effect_type))
     img_array = np.array(img)
     
     effects = {
