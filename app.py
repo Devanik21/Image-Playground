@@ -1091,7 +1091,7 @@ def cord_texture(img_array):
     return rope_texture(img_array)
 
 def oil_painting(img_array):
-    return cv2.xphoto.oilPainting(img_array, 7, 1)
+    return cv2.bilateralFilter(img_array, 20, 80, 80)
 
 def watercolor_effect(img_array):
     return cv2.stylization(img_array, sigma_s=60, sigma_r=0.6)
@@ -1452,8 +1452,26 @@ def color_curves(img_array):
     return np.clip(np.power(img_array / 255.0, 0.8) * 255, 0, 255).astype(np.uint8)
 
 def auto_white_balance(img_array):
-    result = cv2.xphoto.createSimpleWB().balanceWhite(img_array)
-    return result
+    # Calculate the average color of the image
+    avg_r = np.mean(img_array[:, :, 0])
+    avg_g = np.mean(img_array[:, :, 1])
+    avg_b = np.mean(img_array[:, :, 2])
+    
+    # Calculate the average of the averages
+    avg_gray = (avg_r + avg_g + avg_b) / 3
+    
+    # Calculate scaling factors for each channel
+    scale_r = avg_gray / avg_r
+    scale_g = avg_gray / avg_g
+    scale_b = avg_gray / avg_b
+    
+    # Apply the scaling factors
+    result = img_array.copy()
+    result[:, :, 0] = np.clip(result[:, :, 0] * scale_r, 0, 255)
+    result[:, :, 1] = np.clip(result[:, :, 1] * scale_g, 0, 255)
+    result[:, :, 2] = np.clip(result[:, :, 2] * scale_b, 0, 255)
+    
+    return result.astype(np.uint8)
 
 def skin_tone_enhance(img_array):
     return retro_color(img_array, "pink")
