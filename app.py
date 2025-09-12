@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps, ImageDraw, ImageFont
 import io
-import base64
+import base64 
 from scipy import ndimage
 from skimage import filters, segmentation, measure, morphology, feature, transform
 from skimage.filters import gaussian, sobel, laplace, roberts, prewitt
