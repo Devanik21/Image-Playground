@@ -11,7 +11,7 @@
   ### 🌟 **Over 500+ Creative Tools to Transform Your Images Instantly!** 🌟
   
   *A powerful, browser-based image editing application built with 100% Python Magic!*
-  
+   
   **No heavy software • No steep learning curves • Just upload and create!**
 
   ---
