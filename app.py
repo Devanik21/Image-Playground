@@ -11,7 +11,7 @@ from skimage.feature import canny
 import matplotlib.pyplot as plt 
 import seaborn as sns
 from scipy.ndimage import uniform_filter, median_filter, maximum_filter, minimum_filter
-
+  
 # Set page config
 st.set_page_config(
     page_title="Image Playground",
