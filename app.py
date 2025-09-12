@@ -8,7 +8,7 @@ from scipy import ndimage
 from skimage import filters, segmentation, measure, morphology, feature, transform
 from skimage.filters import gaussian, sobel, laplace, roberts, prewitt
 from skimage.feature import canny
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt 
 import seaborn as sns
 from scipy.ndimage import uniform_filter, median_filter, maximum_filter, minimum_filter
 
